@@ -1,125 +1,708 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Voice & Text Chat</title>
-    <style>
-        body { font-family: sans-serif; background: #1e1e2e; color: #cdd6f4; margin: 0; display: flex; flex-direction: column; height: 100vh; }
-        #chat { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-        .msg { background: #313244; padding: 10px 15px; border-radius: 8px; max-width: 70%; word-wrap: break-word; }
-        .msg.self { background: #89b4fa; color: #11111b; align-self: flex-end; }
-        .sender { font-size: 0.8em; opacity: 0.7; margin-bottom: 5px; display: block; }
-        #controls { display: flex; padding: 15px; background: #181825; gap: 10px; }
-        input[type="text"] { flex: 1; padding: 10px; border-radius: 5px; border: none; outline: none; background: #313244; color: #fff; }
-        button { padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; background: #89b4fa; color: #11111b; transition: 0.2s; }
-        button:hover { opacity: 0.8; }
-        #recordBtn { background: #f38ba8; }
-        #recordBtn.recording { animation: pulse 1s infinite alternate; }
-        @keyframes pulse { from { background: #f38ba8; } to { background: #ff476f; } }
-        audio { height: 35px; margin-top: 5px; outline: none; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LANMESH — Serverless P2P Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:            #0b0b0c;
+    --panel:         #141414;
+    --panel-raised:  #1b1b1c;
+    --line:          #2a2a2a;
+    --yellow:        #f2c230;
+    --yellow-dim:    #7a6318;
+    --ink:           #0b0b0c;
+    --text:          #eeeeea;
+    --text-muted:    #8d8d87;
+    --radius:        14px;
+    --radius-sm:     9px;
+    --font-display:  'Sora', sans-serif;
+    --font-body:     'Inter', sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body{ height:100%; }
+
+  body{
+    margin:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:
+      radial-gradient(900px 500px at 15% 10%, rgba(242,194,48,0.05), transparent 60%),
+      #050506;
+    color:var(--text);
+    font-family:var(--font-body);
+    overflow:hidden;
+  }
+
+  #app{
+    width:100%;
+    max-width:430px;
+    height:min(880px, 97vh);
+    display:flex;
+    flex-direction:column;
+    background:
+      radial-gradient(500px 300px at 100% -10%, rgba(242,194,48,0.06), transparent 60%),
+      var(--bg);
+    border:1px solid var(--line);
+    border-radius:22px;
+    box-shadow:0 30px 60px -20px rgba(0,0,0,0.6), 0 0 0 1px rgba(242,194,48,0.03);
+    overflow:hidden;
+  }
+
+  /* ---------- Header ---------- */
+  header{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:16px 18px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+    border-radius:22px 22px 0 0;
+    flex-shrink:0;
+    flex-wrap:wrap;
+  }
+
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+
+  .mesh-mark{
+    width:26px; height:26px;
+    position:relative;
+    flex-shrink:0;
+  }
+  .mesh-mark span{
+    position:absolute;
+    width:6px; height:6px;
+    border-radius:50%;
+    background:var(--yellow);
+  }
+  .mesh-mark span:nth-child(1){ top:0; left:10px; }
+  .mesh-mark span:nth-child(2){ top:10px; left:0; opacity:.55; }
+  .mesh-mark span:nth-child(3){ top:10px; left:20px; opacity:.55; }
+  .mesh-mark span:nth-child(4){ top:20px; left:10px; opacity:.85; }
+  .mesh-mark::before{
+    content:"";
+    position:absolute;
+    top:13px; left:3px;
+    width:20px; height:1px;
+    background:var(--yellow-dim);
+    transform:rotate(-25deg);
+  }
+  .mesh-mark::after{
+    content:"";
+    position:absolute;
+    top:13px; left:3px;
+    width:20px; height:1px;
+    background:var(--yellow-dim);
+    transform:rotate(25deg);
+  }
+
+  .brand h1{
+    font-family:var(--font-display);
+    font-weight:800;
+    font-size:1.05rem;
+    letter-spacing:0.06em;
+    margin:0;
+    color:var(--text);
+  }
+  .brand h1 span{ color:var(--yellow); }
+
+  .status-pill{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:0.72rem;
+    color:var(--text-muted);
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+    margin-left:2px;
+  }
+  .status-dot{
+    width:7px; height:7px;
+    border-radius:50%;
+    background:#3ddc84;
+    box-shadow:0 0 0 3px rgba(61,220,132,0.15);
+    animation:blip 2.4s infinite ease-in-out;
+  }
+  @keyframes blip{
+    0%,100%{ opacity:1; }
+    50%{ opacity:0.35; }
+  }
+
+  .group-control{
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .group-control label{
+    font-size:0.7rem;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--text-muted);
+  }
+
+  .select-wrap{
+    position:relative;
+  }
+  .select-wrap svg{
+    position:absolute;
+    right:11px; top:50%;
+    transform:translateY(-50%);
+    pointer-events:none;
+  }
+  select{
+    appearance:none;
+    -webkit-appearance:none;
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:var(--font-body);
+    font-weight:600;
+    font-size:0.85rem;
+    padding:9px 34px 9px 14px;
+    border-radius:999px;
+    cursor:pointer;
+    outline:none;
+    min-width:140px;
+    transition:border-color .15s ease;
+  }
+  select:hover, select:focus{
+    border-color:var(--yellow-dim);
+  }
+  select option{
+    background:var(--panel-raised);
+    color:var(--text);
+  }
+
+  /* ---------- Chat area ---------- */
+  #chat{
+    flex:1;
+    padding:22px 18px;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  #chat::-webkit-scrollbar{ width:8px; }
+  #chat::-webkit-scrollbar-thumb{ background:var(--line); border-radius:4px; }
+
+  .empty-state{
+    margin:auto;
+    text-align:center;
+    color:var(--text-muted);
+    font-size:0.85rem;
+    max-width:280px;
+    line-height:1.5;
+  }
+  .empty-state strong{
+    display:block;
+    color:var(--text);
+    font-family:var(--font-display);
+    font-size:1rem;
+    margin-bottom:6px;
+  }
+
+  .row{
+    display:flex;
+    flex-direction:column;
+    max-width:78%;
+  }
+  .row.self{ align-self:flex-end; align-items:flex-end; }
+  .row.other{ align-self:flex-start; align-items:flex-start; }
+
+  .meta{
+    font-size:0.68rem;
+    color:var(--text-muted);
+    margin-bottom:4px;
+    padding:0 4px;
+    display:flex;
+    gap:6px;
+    align-items:center;
+  }
+  .meta .tag{
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    color:var(--yellow);
+    padding:1px 7px;
+    border-radius:999px;
+    font-weight:600;
+    letter-spacing:0.03em;
+  }
+
+  .bubble{
+    padding:11px 15px;
+    border-radius:var(--radius);
+    line-height:1.45;
+    font-size:0.92rem;
+    word-wrap:break-word;
+  }
+  .row.other .bubble{
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    border-top-left-radius:4px;
+    color:var(--text);
+  }
+  .row.self .bubble{
+    background:var(--yellow);
+    color:var(--ink);
+    border-top-right-radius:4px;
+    font-weight:500;
+  }
+
+  .chat-img{
+    display:block;
+    max-width:240px;
+    border-radius:10px;
+    margin-top:2px;
+  }
+  audio{
+    height:34px;
+    margin-top:2px;
+    filter:invert(0);
+  }
+  .row.self audio{ filter: invert(1) hue-rotate(180deg); }
+
+  .loc-card{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    text-decoration:none;
+    color:inherit;
+  }
+  .loc-card svg{ flex-shrink:0; }
+  .loc-card .loc-text{ display:flex; flex-direction:column; }
+  .loc-card .loc-title{ font-weight:600; font-size:0.88rem; }
+  .loc-card .loc-sub{ font-size:0.72rem; opacity:0.7; }
+
+  /* ---------- Input bar ---------- */
+  #controls{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:14px 16px;
+    background:var(--panel);
+    border-top:1px solid var(--line);
+    border-radius:0 0 22px 22px;
+    flex-shrink:0;
+  }
+
+  .icon-btn{
+    width:42px; height:42px;
+    flex-shrink:0;
+    border-radius:50%;
+    border:1px solid var(--line);
+    background:var(--panel-raised);
+    color:var(--text-muted);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .icon-btn:hover{
+    border-color:var(--yellow-dim);
+    color:var(--yellow);
+  }
+  .icon-btn.recording{
+    background:var(--yellow);
+    border-color:var(--yellow);
+    color:var(--ink);
+    animation:rec-pulse 1.1s infinite;
+  }
+  @keyframes rec-pulse{
+    0%{ box-shadow:0 0 0 0 rgba(242,194,48,0.5); }
+    70%{ box-shadow:0 0 0 9px rgba(242,194,48,0); }
+    100%{ box-shadow:0 0 0 0 rgba(242,194,48,0); }
+  }
+
+  #msgInput{
+    flex:1;
+    min-width:0;
+    padding:12px 16px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    background:var(--panel-raised);
+    color:var(--text);
+    font-family:var(--font-body);
+    font-size:0.9rem;
+    outline:none;
+    transition:border-color .15s ease;
+  }
+  #msgInput:focus{ border-color:var(--yellow-dim); }
+  #msgInput::placeholder{ color:var(--text-muted); }
+
+  #sendBtn{
+    width:42px; height:42px;
+    border-radius:50%;
+    border:none;
+    background:var(--yellow);
+    color:var(--ink);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex-shrink:0;
+    transition:opacity .15s ease, transform .1s ease;
+  }
+  #sendBtn:hover{ opacity:0.88; }
+  #sendBtn:active{ transform:scale(0.94); }
+</style>
 </head>
 <body>
 
-    <div id="chat"></div>
-    
-    <div id="controls">
-        <input type="text" id="msgInput" placeholder="Type a message..." onkeypress="handleEnter(event)">
-        <button onclick="sendText()">Send</button>
-        <button id="recordBtn" onmousedown="startRecording()" onmouseup="stopRecording()">🎤 Hold to Record</button>
+<div id="app">
+<header>
+  <div class="brand">
+    <div class="mesh-mark"><span></span><span></span><span></span><span></span></div>
+    <h1>LAN<span>MESH</span></h1>
+  </div>
+  <div class="status-pill"><span class="status-dot"></span>mDNS discovery active</div>
+  <div class="status-pill" id="nicknamePill" style="cursor:pointer;" onclick="promptNickname()" title="Click to change your nickname">you: <span id="nicknameLabel">—</span></div>
+  <div class="status-pill" id="adminPill" style="cursor:pointer;" onclick="promptAdminChoice()" title="Click to change whether this device logs messages locally">log: <span id="adminLabel">—</span></div>
+  <div class="status-pill" id="adminPill" style="cursor:pointer;" onclick="promptAdminToggle()" title="Click to change whether this device stores conversations locally">admin: <span id="adminLabel">off</span></div>
+
+  <button class="icon-btn" id="nicknameBtn" title="Change nickname" onclick="promptNickname()" style="margin-left:8px;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20 21C20 17.13 16.42 14 12 14C7.58 14 4 17.13 4 21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="7.5" r="4" stroke="currentColor" stroke-width="1.7"/></svg>
+  </button>
+
+  <div class="group-control">
+    <label for="groupSelect">Group</label>
+    <div class="select-wrap">
+      <select id="groupSelect" onchange="handleGroupChange()">
+        <option value="general">general</option>
+        <option value="__new__">+ New group…</option>
+      </select>
+      <svg width="11" height="7" viewBox="0 0 11 7" fill="none"><path d="M1 1L5.5 5.5L10 1" stroke="#8d8d87" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
+  </div>
+</header>
 
-    <script>
-        const ws = new WebSocket(`ws://${window.location.host}/ws`);
-        const chat = document.getElementById('chat');
-        const recordBtn = document.getElementById('recordBtn');
-        let mediaRecorder;
-        let audioChunks = [];
+<div id="chat">
+  <div class="empty-state" id="emptyState">
+    <strong>No messages yet</strong>
+    You're viewing <span id="emptyGroupName">general</span>. Peers on this LAN who share this group will appear here.
+  </div>
+</div>
 
-        // Setup Audio Recording
-        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-            mediaRecorder = new MediaRecorder(stream);
-            
-            mediaRecorder.ondataavailable = event => {
-                audioChunks.push(event.data);
-            };
+<div id="controls">
+  <button class="icon-btn" id="imageBtn" title="Send image" onclick="document.getElementById('imageInput').click()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="9.5" r="1.6" stroke="currentColor" stroke-width="1.7"/><path d="M4 17L9 12.5L12.5 16L16 12.5L20.5 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="sendImage(event)">
 
-            mediaRecorder.onstop = () => {
-            // REMOVED hardcoded { type: 'audio/webm' }
-            // Let the browser use its default recording format
-            const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-            audioChunks = [];
-            
-            const reader = new FileReader();
-            reader.readAsDataURL(audioBlob);
-            reader.onloadend = () => {
-                const base64Audio = reader.result;
-                
-                // Debugging: Check if the string is generated correctly
-                console.log("Generated Audio URL:", base64Audio.substring(0, 50) + "...");
-                
-                sendMessage("audio", base64Audio);
-                appendMessage({ type: "audio", payload: base64Audio, sender: "You" }, true);
-            };
-        };
-        }).catch(err => console.error("Mic access denied:", err));
+  <button class="icon-btn" id="locationBtn" title="Share location" onclick="shareLocation()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 21C12 21 19 14.6 19 9.8C19 5.9 15.9 3 12 3C8.1 3 5 5.9 5 9.8C5 14.6 12 21 12 21Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="9.8" r="2.4" stroke="currentColor" stroke-width="1.7"/></svg>
+  </button>
 
-        // WebSocket Handlers
-        ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            appendMessage(msg, false);
-        };
+  <input type="text" id="msgInput" placeholder="Message #general" onkeypress="handleEnter(event)">
 
-        // UI Interactions
-        function startRecording() {
-            if(mediaRecorder && mediaRecorder.state === "inactive") {
-                mediaRecorder.start();
-                recordBtn.classList.add("recording");
-                recordBtn.innerText = "Recording...";
-            }
-        }
+  <button class="icon-btn" id="recordBtn" title="Hold to record voice note"
+    onmousedown="startRecording()" onmouseup="stopRecording()" onmouseleave="stopRecording()"
+    ontouchstart="startRecording()" ontouchend="stopRecording()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="2" width="6" height="12" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="M5 11C5 15 8.1 18 12 18C15.9 18 19 15 19 11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 18V22" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+  </button>
 
-        function stopRecording() {
-            if(mediaRecorder && mediaRecorder.state === "recording") {
-                mediaRecorder.stop();
-                recordBtn.classList.remove("recording");
-                recordBtn.innerText = "🎤 Hold to Record";
-            }
-        }
+  <button id="sendBtn" title="Send" onclick="sendText()">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M21 3L3 10.5L11 13M21 3L14.5 21L11 13M21 3L11 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</div>
+</div>
 
-        function sendText() {
-            const input = document.getElementById('msgInput');
-            const text = input.value.trim();
-            if (text) {
-                sendMessage("text", text);
-                appendMessage({ type: "text", payload: text, sender: "You" }, true);
-                input.value = '';
-            }
-        }
+<script>
+  const ws = new WebSocket(`ws://${window.location.host}/ws`);
+  const chat = document.getElementById('chat');
+  const emptyState = document.getElementById('emptyState');
+  const emptyGroupNameEl = document.getElementById('emptyGroupName');
+  const recordBtn = document.getElementById('recordBtn');
+  const groupSelect = document.getElementById('groupSelect');
+  const msgInput = document.getElementById('msgInput');
 
-        function handleEnter(e) { if (e.key === 'Enter') sendText(); }
+  let mediaRecorder;
+  let audioChunks = [];
 
-        function sendMessage(type, payload) {
-            ws.send(JSON.stringify({ type: type, payload: payload }));
-        }
+  // ---- Nickname state ----
+  // Nicknames are a purely cosmetic, client-chosen label — the backend never
+  // trusts them for identity (msg.Sender is still always the real Peer ID,
+  // set server-side). We just carry a "nickname" field alongside every
+  // message so peers can show something human-friendly instead of a hash.
+  const NICK_KEY = "lanmesh_nickname";
+  const nicknameLabel = document.getElementById('nicknameLabel');
+  // Cache of peerId -> last-seen nickname, so we can label older/incoming
+  // messages consistently even if a peer's nickname arrives on one message
+  // and not another.
+  const peerNicknames = {};
 
-        // Render messages to DOM
-        function appendMessage(msg, isSelf) {
-            const div = document.createElement('div');
-            div.className = `msg ${isSelf ? 'self' : ''}`;
-            
-            const senderSpan = `<span class="sender">${msg.sender.substring(0,8)}...</span>`;
-            
-            if (msg.type === "text") {
-                div.innerHTML = `${senderSpan}${msg.payload}`;
-            } else if (msg.type === "audio") {
-                div.innerHTML = `${senderSpan}<audio controls src="${msg.payload}"></audio>`;
-            }
-            
-            chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight; // Auto-scroll
-        }
-    </script>
+  function loadNickname(){
+    return localStorage.getItem(NICK_KEY) || "";
+  }
+  function saveNickname(name){
+    localStorage.setItem(NICK_KEY, name);
+    nicknameLabel.textContent = name || "anon";
+  }
+  function promptNickname(){
+    const current = loadNickname();
+    const name = prompt("Choose a nickname (visible to peers on this LAN):", current);
+    if (name === null) return; // cancelled
+    const clean = name.trim().slice(0, 24);
+    saveNickname(clean);
+  }
+  function ensureNickname(){
+    let name = loadNickname();
+    if (!name) {
+      name = prompt("Choose a nickname (visible to peers on this LAN):", "") || "";
+      name = name.trim().slice(0, 24);
+      saveNickname(name);
+    } else {
+      nicknameLabel.textContent = name;
+    }
+  }
+  ensureNickname();
+
+  // ---- Admin / authority choice ----
+  // Asked once, right after the nickname. "Yes" tells the Go backend
+  // (POST /admin/enable) to start writing every message this device sees
+  // to a local file — see admin.go. "No" means nothing is stored here.
+  // The answer is remembered in localStorage so it's only asked once per
+  // device, but can be changed anytime via the "log:" pill in the header.
+  const ADMIN_KEY = "lanmesh_is_admin";
+  const adminLabel = document.getElementById('adminLabel');
+
+  function loadAdminChoice(){
+    return localStorage.getItem(ADMIN_KEY); // "yes" | "no" | null (never asked)
+  }
+  async function setAdminChoice(isAdmin){
+    localStorage.setItem(ADMIN_KEY, isAdmin ? "yes" : "no");
+    adminLabel.textContent = isAdmin ? "on" : "off";
+    if (isAdmin) {
+      try {
+        await fetch('/admin/enable', { method: 'POST' });
+      } catch (e) {
+        console.error('Could not enable admin logging:', e);
+      }
+    }
+  }
+  function promptAdminChoice(){
+    const isAdmin = confirm(
+      "Are you the admin / disaster-authority for this device?\n\n" +
+      "OK = Yes — log every message this device sees, locally on this device.\n" +
+      "Cancel = No — don't store anything here."
+    );
+    setAdminChoice(isAdmin);
+  }
+  function ensureAdminChoice(){
+    const existing = loadAdminChoice();
+    if (existing === null) {
+      promptAdminChoice();
+    } else {
+      adminLabel.textContent = existing === "yes" ? "on" : "off";
+      if (existing === "yes") {
+        // Re-assert on every load in case the Go process was restarted
+        // without the -admin flag — logging should stay on for a device
+        // that already opted in.
+        setAdminChoice(true);
+      }
+    }
+  }
+  ensureAdminChoice();
+
+  // ---- Group state ----
+  // Group ids are always normalized (trimmed + lowercased) before being
+  // compared or stored, so "General", "general ", and "general" are always
+  // treated as the exact same group — this is what keeps messages from one
+  // group ever leaking into another.
+  function normalizeGroup(str){
+    return (str || "general").trim().toLowerCase();
+  }
+
+  let currentGroup = "general";
+  let allMessages = []; // { type, payload, sender, groupId, isSelf }
+
+  function handleGroupChange(){
+    const val = groupSelect.value;
+    if (val === "__new__") {
+      const name = prompt("Name your group:");
+      if (!name || !name.trim()) {
+        groupSelect.value = currentGroup;
+        return;
+      }
+      const clean = normalizeGroup(name);
+      const exists = [...groupSelect.options].some(o => normalizeGroup(o.value) === clean);
+      if (!exists) {
+        const opt = document.createElement('option');
+        opt.value = clean;
+        opt.textContent = clean;
+        groupSelect.insertBefore(opt, groupSelect.querySelector('option[value="__new__"]'));
+      }
+      groupSelect.value = clean;
+    }
+    currentGroup = normalizeGroup(groupSelect.value);
+    msgInput.placeholder = `Message #${currentGroup}`;
+    emptyGroupNameEl.textContent = currentGroup;
+    renderChat();
+  }
+
+  // ---- Audio recording ----
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
+    mediaRecorder.onstop = () => {
+      const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+      audioChunks = [];
+      const reader = new FileReader();
+      reader.readAsDataURL(audioBlob);
+      reader.onloadend = () => {
+        const base64Audio = reader.result;
+        sendMessage("audio", base64Audio);
+        appendMessage({ type: "audio", payload: base64Audio, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+      };
+    };
+  }).catch(err => console.error("Mic access denied:", err));
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    msg.groupId = normalizeGroup(msg.groupId);
+    if (msg.nickname) {
+      peerNicknames[msg.sender] = msg.nickname;
+    }
+    appendMessage(msg, false);
+  };
+
+  function startRecording(){
+    if (mediaRecorder && mediaRecorder.state === "inactive") {
+      mediaRecorder.start();
+      recordBtn.classList.add("recording");
+    }
+  }
+  function stopRecording(){
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+      recordBtn.classList.remove("recording");
+    }
+  }
+
+  function sendText(){
+    const text = msgInput.value.trim();
+    if (!text) return;
+    sendMessage("text", text);
+    appendMessage({ type: "text", payload: text, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+    msgInput.value = '';
+  }
+  function handleEnter(e){ if (e.key === 'Enter') sendText(); }
+
+  function sendImage(event){
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64Image = reader.result;
+      sendMessage("image", base64Image);
+      appendMessage({ type: "image", payload: base64Image, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+    };
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  }
+
+  function shareLocation(){
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by this browser.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition((position) => {
+      const loc = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        timestamp: Date.now()
+      };
+      const payload = JSON.stringify(loc);
+      sendMessage("location", payload);
+      appendMessage({ type: "location", payload: payload, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+    }, (err) => {
+      alert("Could not get location: " + err.message);
+    }, { enableHighAccuracy: true, timeout: 10000 });
+  }
+
+  function sendMessage(type, payload){
+    ws.send(JSON.stringify({ type: type, payload: payload, groupId: currentGroup, nickname: loadNickname() }));
+  }
+
+  function appendMessage(msg, isSelf){
+    msg.groupId = normalizeGroup(msg.groupId);
+    allMessages.push({ ...msg, isSelf });
+    if (msg.groupId === currentGroup) {
+      emptyState.style.display = "none";
+      renderSingleMessage({ ...msg, isSelf });
+      chat.scrollTop = chat.scrollHeight;
+    }
+  }
+
+  function renderChat(){
+    chat.innerHTML = "";
+    const visible = allMessages.filter(m => m.groupId === currentGroup);
+    if (visible.length === 0) {
+      chat.appendChild(emptyState);
+      emptyState.style.display = "block";
+    } else {
+      visible.forEach(m => renderSingleMessage(m));
+    }
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function timeLabel(ts){
+    if (!ts) return '';
+    const d = new Date(ts);
+    return `<span>${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`;
+  }
+
+  function renderSingleMessage(msg){
+    const row = document.createElement('div');
+    row.className = `row ${msg.isSelf ? 'self' : 'other'}`;
+
+    const peerNick = msg.nickname || peerNicknames[msg.sender];
+    const senderLabel = msg.isSelf
+      ? "You"
+      : (peerNick || (msg.sender || "peer").substring(0, 8));
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.innerHTML = `<span>${senderLabel}</span><span class="tag">#${msg.groupId}</span>${timeLabel(msg.timestamp)}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    if (msg.type === "text") {
+      bubble.textContent = msg.payload;
+    } else if (msg.type === "audio") {
+      bubble.innerHTML = `<audio controls src="${msg.payload}"></audio>`;
+    } else if (msg.type === "image") {
+      bubble.innerHTML = `<img class="chat-img" src="${msg.payload}">`;
+    } else if (msg.type === "location") {
+      const loc = JSON.parse(msg.payload);
+      const mapUrl = `https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lng}#map=16/${loc.lat}/${loc.lng}`;
+      bubble.innerHTML = `
+        <a class="loc-card" href="${mapUrl}" target="_blank">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 21C12 21 19 14.6 19 9.8C19 5.9 15.9 3 12 3C8.1 3 5 5.9 5 9.8C5 14.6 12 21 12 21Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="9.8" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span class="loc-text">
+            <span class="loc-title">Shared location</span>
+            <span class="loc-sub">${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)} — view on map</span>
+          </span>
+        </a>`;
+    }
+
+    row.appendChild(meta);
+    row.appendChild(bubble);
+    chat.appendChild(row);
+  }
+</script>
 </body>
 </html>

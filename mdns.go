@@ -16,9 +16,7 @@ type discoveryNotifee struct {
 }
 
 func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
-
 	fmt.Println("Found peer:", pi.ID)
-
 	err := n.h.Connect(context.Background(), pi)
 	if err != nil {
 		fmt.Println("Connection failed:", err)
@@ -26,10 +24,7 @@ func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 func setupMDNS(ctx context.Context, h host.Host) error {
-
 	notifee := &discoveryNotifee{h: h}
-
 	service := mdns.NewMdnsService(h, mdnsServiceName, notifee)
-
 	return service.Start()
 }
