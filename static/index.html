@@ -185,6 +185,22 @@
     color:var(--text);
   }
 
+  .nick-pill{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:0.78rem;
+    font-weight:600;
+    color:var(--yellow);
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    padding:6px 12px;
+    border-radius:999px;
+    cursor:pointer;
+    transition:border-color .15s ease;
+  }
+  .nick-pill:hover{ border-color:var(--yellow-dim); }
+
   /* ---------- Chat area ---------- */
   #chat{
     flex:1;
@@ -368,13 +384,8 @@
     <h1>LAN<span>MESH</span></h1>
   </div>
   <div class="status-pill"><span class="status-dot"></span>mDNS discovery active</div>
-  <div class="status-pill" id="nicknamePill" style="cursor:pointer;" onclick="promptNickname()" title="Click to change your nickname">you: <span id="nicknameLabel">—</span></div>
-  <div class="status-pill" id="adminPill" style="cursor:pointer;" onclick="promptAdminChoice()" title="Click to change whether this device logs messages locally">log: <span id="adminLabel">—</span></div>
-  <div class="status-pill" id="adminPill" style="cursor:pointer;" onclick="promptAdminToggle()" title="Click to change whether this device stores conversations locally">admin: <span id="adminLabel">off</span></div>
 
-  <button class="icon-btn" id="nicknameBtn" title="Change nickname" onclick="promptNickname()" style="margin-left:8px;">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20 21C20 17.13 16.42 14 12 14C7.58 14 4 17.13 4 21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="7.5" r="4" stroke="currentColor" stroke-width="1.7"/></svg>
-  </button>
+  <div class="nick-pill" id="nickPill" title="Change nickname" onclick="changeNickname()"></div>
 
   <div class="group-control">
     <label for="groupSelect">Group</label>
@@ -427,94 +438,69 @@
   const recordBtn = document.getElementById('recordBtn');
   const groupSelect = document.getElementById('groupSelect');
   const msgInput = document.getElementById('msgInput');
+  const nickPill = document.getElementById('nickPill');
 
   let mediaRecorder;
   let audioChunks = [];
 
-  // ---- Nickname state ----
-  // Nicknames are a purely cosmetic, client-chosen label — the backend never
-  // trusts them for identity (msg.Sender is still always the real Peer ID,
-  // set server-side). We just carry a "nickname" field alongside every
-  // message so peers can show something human-friendly instead of a hash.
-  const NICK_KEY = "lanmesh_nickname";
-  const nicknameLabel = document.getElementById('nicknameLabel');
-  // Cache of peerId -> last-seen nickname, so we can label older/incoming
-  // messages consistently even if a peer's nickname arrives on one message
-  // and not another.
-  const peerNicknames = {};
+  // This tab's own libp2p peer ID, sent down once by the backend right
+  // after connecting ("whoami"). Used to tell apart "my own message coming
+  // back through the broadcast" from "someone else's message" — replacing
+  // the old approach of hardcoding isSelf=true at send time, which broke
+  // as soon as more than one client could be attached to the same backend.
+  let myPeerId = null;
 
-  function loadNickname(){
-    return localStorage.getItem(NICK_KEY) || "";
-  }
-  function saveNickname(name){
-    localStorage.setItem(NICK_KEY, name);
-    nicknameLabel.textContent = name || "anon";
-  }
-  function promptNickname(){
-    const current = loadNickname();
-    const name = prompt("Choose a nickname (visible to peers on this LAN):", current);
-    if (name === null) return; // cancelled
-    const clean = name.trim().slice(0, 24);
-    saveNickname(clean);
-  }
-  function ensureNickname(){
-    let name = loadNickname();
-    if (!name) {
-      name = prompt("Choose a nickname (visible to peers on this LAN):", "") || "";
-      name = name.trim().slice(0, 24);
-      saveNickname(name);
-    } else {
-      nicknameLabel.textContent = name;
+  // ---- Nickname ----
+  // Stored in localStorage so it's stable across reloads of THIS browser.
+  // Purely a display label — the backend still identifies senders by
+  // libp2p peer ID; nickname is just carried alongside each message.
+  function loadOrPromptNickname(){
+    let nick = localStorage.getItem('lanmesh_nickname');
+    if (!nick) {
+      nick = (prompt("Pick a nickname:", "anon" + Math.floor(Math.random() * 1000)) || "").trim();
+      if (!nick) nick = "anon" + Math.floor(Math.random() * 1000);
+      localStorage.setItem('lanmesh_nickname', nick);
     }
+    return nick;
   }
-  ensureNickname();
 
-  // ---- Admin / authority choice ----
-  // Asked once, right after the nickname. "Yes" tells the Go backend
-  // (POST /admin/enable) to start writing every message this device sees
-  // to a local file — see admin.go. "No" means nothing is stored here.
-  // The answer is remembered in localStorage so it's only asked once per
-  // device, but can be changed anytime via the "log:" pill in the header.
-  const ADMIN_KEY = "lanmesh_is_admin";
-  const adminLabel = document.getElementById('adminLabel');
+  let myNickname = loadOrPromptNickname();
+  nickPill.textContent = myNickname;
 
-  function loadAdminChoice(){
-    return localStorage.getItem(ADMIN_KEY); // "yes" | "no" | null (never asked)
+    // ---- Admin prompt ----
+  // Asked once per browser, same pattern as nickname. If yes, tells the
+  // backend to start logging every message it sees to disk (see admin.go).
+  // This is a per-DEVICE setting (the backend enables logging for itself,
+  // not just this tab), so re-answering "yes" on another tab of the same
+  // backend is harmless — enableAdminLogging() is a no-op after the first
+  // call.
+  function askAdminStatus(){
+    if (localStorage.getItem('lanmesh_admin_asked')) return;
+    localStorage.setItem('lanmesh_admin_asked', '1');
+
+    const isAdmin = confirm("Are you the admin for this device?");
+    if (!isAdmin) return;
+
+    fetch('/admin/enable', { method: 'POST' })
+      .then(res => {
+        if (res.ok) {
+          console.log('Admin logging enabled for this device.');
+        } else {
+          console.error('Failed to enable admin logging:', res.status);
+        }
+      })
+      .catch(err => console.error('Admin enable request failed:', err));
   }
-  async function setAdminChoice(isAdmin){
-    localStorage.setItem(ADMIN_KEY, isAdmin ? "yes" : "no");
-    adminLabel.textContent = isAdmin ? "on" : "off";
-    if (isAdmin) {
-      try {
-        await fetch('/admin/enable', { method: 'POST' });
-      } catch (e) {
-        console.error('Could not enable admin logging:', e);
-      }
-    }
+
+  askAdminStatus();
+
+  function changeNickname(){
+    const next = (prompt("Change nickname:", myNickname) || "").trim();
+    if (!next) return;
+    myNickname = next;
+    localStorage.setItem('lanmesh_nickname', myNickname);
+    nickPill.textContent = myNickname;
   }
-  function promptAdminChoice(){
-    const isAdmin = confirm(
-      "Are you the admin / disaster-authority for this device?\n\n" +
-      "OK = Yes — log every message this device sees, locally on this device.\n" +
-      "Cancel = No — don't store anything here."
-    );
-    setAdminChoice(isAdmin);
-  }
-  function ensureAdminChoice(){
-    const existing = loadAdminChoice();
-    if (existing === null) {
-      promptAdminChoice();
-    } else {
-      adminLabel.textContent = existing === "yes" ? "on" : "off";
-      if (existing === "yes") {
-        // Re-assert on every load in case the Go process was restarted
-        // without the -admin flag — logging should stay on for a device
-        // that already opted in.
-        setAdminChoice(true);
-      }
-    }
-  }
-  ensureAdminChoice();
 
   // ---- Group state ----
   // Group ids are always normalized (trimmed + lowercased) before being
@@ -526,7 +512,23 @@
   }
 
   let currentGroup = "general";
-  let allMessages = []; // { type, payload, sender, groupId, isSelf }
+  let allMessages = []; // { type, payload, sender, groupId, nickname, timestamp, isSelf }
+
+  // Adds a group to the dropdown if it isn't already there. Called both
+  // when this tab creates a group and when a group_announce arrives from
+  // another peer (or another tab attached to this same backend).
+  function addGroupOption(name){
+    const clean = normalizeGroup(name);
+    if (clean === "general") return clean;
+    const exists = [...groupSelect.options].some(o => normalizeGroup(o.value) === clean);
+    if (!exists) {
+      const opt = document.createElement('option');
+      opt.value = clean;
+      opt.textContent = clean;
+      groupSelect.insertBefore(opt, groupSelect.querySelector('option[value="__new__"]'));
+    }
+    return clean;
+  }
 
   function handleGroupChange(){
     const val = groupSelect.value;
@@ -536,17 +538,16 @@
         groupSelect.value = currentGroup;
         return;
       }
-      const clean = normalizeGroup(name);
-      const exists = [...groupSelect.options].some(o => normalizeGroup(o.value) === clean);
-      if (!exists) {
-        const opt = document.createElement('option');
-        opt.value = clean;
-        opt.textContent = clean;
-        groupSelect.insertBefore(opt, groupSelect.querySelector('option[value="__new__"]'));
-      }
+      const clean = addGroupOption(name);
       groupSelect.value = clean;
+      currentGroup = clean;
+      // Tell the backend about the new group — it persists it and fans it
+      // out to every other locally attached client AND every libp2p peer,
+      // so it shows up in everyone's dropdown, not just this tab's.
+      ws.send(JSON.stringify({ type: "group_announce", payload: clean, groupId: clean }));
+    } else {
+      currentGroup = normalizeGroup(val);
     }
-    currentGroup = normalizeGroup(groupSelect.value);
     msgInput.placeholder = `Message #${currentGroup}`;
     emptyGroupNameEl.textContent = currentGroup;
     renderChat();
@@ -564,18 +565,29 @@
       reader.onloadend = () => {
         const base64Audio = reader.result;
         sendMessage("audio", base64Audio);
-        appendMessage({ type: "audio", payload: base64Audio, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+        // No local append here — the backend echoes it straight back
+        // through the broadcast, which is what actually renders it.
       };
     };
   }).catch(err => console.error("Mic access denied:", err));
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    msg.groupId = normalizeGroup(msg.groupId);
-    if (msg.nickname) {
-      peerNicknames[msg.sender] = msg.nickname;
+
+    if (msg.type === "whoami") {
+      myPeerId = msg.payload;
+      return;
     }
-    appendMessage(msg, false);
+    if (msg.type === "group_announce") {
+      addGroupOption(msg.payload);
+      return; // not a chat message, nothing to render in the feed
+    }
+
+    msg.groupId = normalizeGroup(msg.groupId);
+    // Every message — including this tab's own — arrives here via the
+    // broadcast. isSelf is decided by peer ID, not by who sent it, so it
+    // stays correct even with several tabs open on the same backend.
+    appendMessage(msg, msg.sender === myPeerId);
   };
 
   function startRecording(){
@@ -595,7 +607,8 @@
     const text = msgInput.value.trim();
     if (!text) return;
     sendMessage("text", text);
-    appendMessage({ type: "text", payload: text, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
+    // Rendered when the backend's broadcast echo comes back, not here —
+    // see ws.onmessage.
     msgInput.value = '';
   }
   function handleEnter(e){ if (e.key === 'Enter') sendText(); }
@@ -607,7 +620,6 @@
     reader.onloadend = () => {
       const base64Image = reader.result;
       sendMessage("image", base64Image);
-      appendMessage({ type: "image", payload: base64Image, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
     };
     reader.readAsDataURL(file);
     event.target.value = "";
@@ -627,14 +639,13 @@
       };
       const payload = JSON.stringify(loc);
       sendMessage("location", payload);
-      appendMessage({ type: "location", payload: payload, sender: "You", groupId: currentGroup, timestamp: Date.now() }, true);
     }, (err) => {
       alert("Could not get location: " + err.message);
     }, { enableHighAccuracy: true, timeout: 10000 });
   }
 
   function sendMessage(type, payload){
-    ws.send(JSON.stringify({ type: type, payload: payload, groupId: currentGroup, nickname: loadNickname() }));
+    ws.send(JSON.stringify({ type: type, payload: payload, groupId: currentGroup, nickname: myNickname }));
   }
 
   function appendMessage(msg, isSelf){
@@ -659,23 +670,14 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
-  function timeLabel(ts){
-    if (!ts) return '';
-    const d = new Date(ts);
-    return `<span>${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`;
-  }
-
   function renderSingleMessage(msg){
     const row = document.createElement('div');
     row.className = `row ${msg.isSelf ? 'self' : 'other'}`;
 
-    const peerNick = msg.nickname || peerNicknames[msg.sender];
-    const senderLabel = msg.isSelf
-      ? "You"
-      : (peerNick || (msg.sender || "peer").substring(0, 8));
+    const senderLabel = msg.isSelf ? "You" : (msg.nickname || (msg.sender || "peer").substring(0, 8));
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.innerHTML = `<span>${senderLabel}</span><span class="tag">#${msg.groupId}</span>${timeLabel(msg.timestamp)}`;
+    meta.innerHTML = `<span>${senderLabel}</span><span class="tag">#${msg.groupId}</span>`;
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';

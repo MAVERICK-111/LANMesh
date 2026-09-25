@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -10,84 +11,219 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/libp2p/go-libp2p"
-	lp2phost "github.com/libp2p/go-libp2p/core/host"
+	libp2phost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	tls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	bolt "go.etcd.io/bbolt"
 )
 
 const protocolID = "/p2p-chat/1.0.0"
 
-// ChatMessage represents text, voice, image, and location messages.
-// Type identifies the payload kind, and Payload carries the actual data.
 type ChatMessage struct {
-	ID        string `json:"id"`        // unique per message; used to dedup flood-relay hops
-	Type      string `json:"type"`      // "text" | "audio" | "image" | "location"
-	Payload   string `json:"payload"`   // text content, base64 audio/image, or JSON location string
-	Sender    string `json:"sender"`    // Peer ID
-	Nickname  string `json:"nickname"`  // human-friendly display name chosen by the sender
-	GroupID   string `json:"groupId"`   // Group this message belongs to (e.g. "general", "team-a")
-	Timestamp int64  `json:"timestamp"` // unix millis, set once at the originating node
+	Type      string `json:"type"`
+	Payload   string `json:"payload"`
+	Sender    string `json:"sender"`
+	GroupID   string `json:"groupId"`
+	MessageID string `json:"messageId"`
+	Hops      int    `json:"hops"`
+	Timestamp int64  `json:"timestamp"`
+	Nickname  string `json:"nickname"`
+}
+
+const maxHops = 6
+
+func newMessageID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b))
+}
+
+var (
+	seenMu sync.Mutex
+	seen   = make(map[string]bool)
+)
+
+func markSeen(id string) bool {
+	seenMu.Lock()
+	defer seenMu.Unlock()
+	if seen[id] {
+		return true
+	}
+	seen[id] = true
+	if len(seen) > 5000 {
+		seen = make(map[string]bool)
+	}
+	return false
+}
+
+func relayToPeers(ctx context.Context, host libp2phost.Host, exclude peer.ID, msg ChatMessage) {
+	if msg.Hops >= maxHops {
+		return
+	}
+	msg.Hops++
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	for _, p := range host.Network().Peers() {
+		if p == exclude {
+			continue
+		}
+		stream, err := host.NewStream(ctx, p, protocolID)
+		if err != nil {
+			continue
+		}
+		stream.Write(data)
+		stream.Close()
+	}
 }
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Global channel to pass messages from libp2p to the WebSocket UI
-var uiMessages = make(chan ChatMessage, 32)
+var db *bolt.DB
 
-func genID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+const groupsBucket = "__groups__"
+
+func initStore(path string) error {
+	var err error
+	db, err = bolt.Open(path, 0600, nil)
+	if err != nil {
+		return err
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(groupsBucket))
+		return err
+	})
 }
 
-// broadcastToPeers fans a message out to every currently-connected peer
-// except `exclude` (typically whoever just sent it to us, so we don't
-// immediately bounce it straight back).
-func broadcastToPeers(ctx context.Context, h lp2phost.Host, exclude peer.ID, msg ChatMessage) {
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return
+func saveMessage(msg ChatMessage) error {
+	if msg.GroupID == "" {
+		msg.GroupID = "general"
 	}
-	for _, pid := range h.Network().Peers() {
-		if pid == exclude {
-			continue
-		}
-		stream, err := h.NewStream(ctx, pid, protocolID)
+	return db.Update(func(tx *bolt.Tx) error {
+		groups, err := tx.CreateBucketIfNotExists([]byte(groupsBucket))
 		if err != nil {
-			continue
+			return err
 		}
-		stream.Write(msgBytes)
-		stream.Close()
+		if err := groups.Put([]byte(msg.GroupID), []byte("1")); err != nil {
+			return err
+		}
+		if msg.Type == "group_announce" {
+			return nil
+		}
+		bucket, err := tx.CreateBucketIfNotExists([]byte(msg.GroupID))
+		if err != nil {
+			return err
+		}
+		seq, err := bucket.NextSequence()
+		if err != nil {
+			return err
+		}
+		key := make([]byte, 8)
+		binary.BigEndian.PutUint64(key, seq)
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		return bucket.Put(key, data)
+	})
+}
+
+func knownGroups() []string {
+	var groups []string
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(groupsBucket))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			groups = append(groups, string(k))
+			return nil
+		})
+	})
+	return groups
+}
+
+func historyFor(groupID string) []ChatMessage {
+	var out []ChatMessage
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(groupID))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var msg ChatMessage
+			if err := json.Unmarshal(v, &msg); err == nil {
+				out = append(out, msg)
+			}
+			return nil
+		})
+	})
+	return out
+}
+
+type hub struct {
+	mu      sync.Mutex
+	clients map[*websocket.Conn]bool
+}
+
+func newHub() *hub {
+	return &hub{clients: make(map[*websocket.Conn]bool)}
+}
+
+func (h *hub) add(c *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[c] = true
+}
+
+func (h *hub) remove(c *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.clients, c)
+}
+
+func (h *hub) broadcast(msg ChatMessage) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if err := c.WriteJSON(msg); err != nil {
+			c.Close()
+			delete(h.clients, c)
+		}
 	}
 }
 
 func main() {
-	// -admin is now just a convenience for non-interactive startup (e.g.
-	// scripted deployments later). The normal path is the in-app prompt:
-	// the frontend calls POST /admin/enable at runtime, so nobody needs
-	// to know this flag exists.
-	adminMode := flag.Bool("admin", false, "start with admin logging already enabled")
-	dataDir := flag.String("data-dir", ".", "directory for the admin log file")
-	httpPort := flag.String("port", "8080", "HTTP/WebSocket server port")
-	flag.Parse()
+	port := flag.Int("port", 8080, "HTTP/WebSocket port to listen on")
+    dataDir := flag.String("data-dir", ".", "directory for this node's bbolt DB and admin log")
+    fmt.Printf("DEBUG: os.Args = %#v\n", os.Args)
+    flag.Parse()
+    fmt.Printf("DEBUG: port=%d dataDir=%q\n", *port, *dataDir)
 
-	setAdminDataDir(*dataDir)
-	if *adminMode {
-		if _, err := enableAdminLogging(); err != nil {
-			log.Fatal("failed to open admin log: ", err)
-		}
+	if err := os.MkdirAll(*dataDir, 0755); err != nil {
+		log.Fatal("failed to create data dir:", err)
 	}
+	setAdminDataDir(*dataDir)
 
 	ctx := context.Background()
 
-	// Force TLS 1.3 as the security transport for every peer connection.
+	dbPath := filepath.Join(*dataDir, "lanmesh.db")
+	if err := initStore(dbPath); err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
 	host, err := libp2p.New(
 		libp2p.Security(tls.ID, tls.New),
 	)
@@ -98,55 +234,47 @@ func main() {
 
 	fmt.Println("Your Peer ID:", host.ID())
 
-	seen := newSeenSet()
+	h := newHub()
 
-	// Handle incoming p2p streams
 	host.SetStreamHandler(protocolID, func(s network.Stream) {
 		defer s.Close()
-		var msg ChatMessage
+		remote := s.Conn().RemotePeer()
 
+		var msg ChatMessage
 		data, err := io.ReadAll(s)
 		if err != nil {
 			return
 		}
-		if err := json.Unmarshal(data, &msg); err != nil || msg.ID == "" {
+		if err := json.Unmarshal(data, &msg); err != nil {
 			return
 		}
 
-		// Dedup: if we've already handled this message ID (we originated
-		// it, or relayed it once already via a different neighbor), drop
-		// it here so the mesh doesn't flood forever.
-		if !seen.markSeen(msg.ID) {
+		if msg.MessageID == "" || markSeen(msg.MessageID) {
 			return
 		}
 
-		uiMessages <- msg
+		if err := saveMessage(msg); err != nil {
+			log.Println("failed to persist incoming message:", err)
+		}
+		h.broadcast(msg)
+
+		relayToPeers(ctx, host, remote, msg)
+
 		if store := currentAdminStore(); store != nil {
 			store.record(msg)
 		}
-
-		// Multi-hop relay: forward to every OTHER connected peer besides
-		// whoever just sent it to us. This is what lets a message cross
-		// regions that aren't in direct range of each other — e.g. a
-		// device in the mech building relays through a device in the
-		// library to reach the boys hostel, as long as each hop is in
-		// range of the next.
-		remote := s.Conn().RemotePeer()
-		go broadcastToPeers(ctx, host, remote, msg)
 	})
 
-	// Start mDNS (using your existing setupMDNS function)
-	err = setupMDNS(ctx, host)
-	if err != nil {
+	if err := setupMDNS(ctx, host); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("mDNS discovery started")
 
-	// Setup HTTP Server for UI and WebSocket
-	http.Handle("/", http.FileServer(http.Dir("./static")))
-	registerAdminRoutes(http.DefaultServeMux)
+	mux := http.NewServeMux()
+	registerAdminRoutes(mux)
+	mux.Handle("/", http.FileServer(http.Dir("./static")))
 
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Println("WebSocket upgrade failed:", err)
@@ -154,18 +282,26 @@ func main() {
 		}
 		defer conn.Close()
 
-		// Goroutine to send messages FROM libp2p TO the UI
-		go func() {
-			for msg := range uiMessages {
-				conn.WriteJSON(msg)
-			}
-		}()
+		h.add(conn)
+		defer h.remove(conn)
 
-		// Loop to read messages FROM the UI and send TO libp2p peers
+		conn.WriteJSON(ChatMessage{Type: "whoami", Payload: host.ID().String()})
+
+		for _, g := range knownGroups() {
+			if g == "general" {
+				continue
+			}
+			conn.WriteJSON(ChatMessage{Type: "group_announce", Payload: g, GroupID: g})
+		}
+		for _, g := range knownGroups() {
+			for _, m := range historyFor(g) {
+				conn.WriteJSON(m)
+			}
+		}
+
 		for {
 			var msg ChatMessage
-			err := conn.ReadJSON(&msg)
-			if err != nil {
+			if err := conn.ReadJSON(&msg); err != nil {
 				break
 			}
 
@@ -173,20 +309,25 @@ func main() {
 			if msg.GroupID == "" {
 				msg.GroupID = "general"
 			}
-			msg.ID = genID()
+			msg.MessageID = newMessageID()
+			msg.Hops = 0
 			msg.Timestamp = time.Now().UnixMilli()
+			markSeen(msg.MessageID)
 
-			seen.markSeen(msg.ID) // record our own message so we ignore it if it loops back
+			if err := saveMessage(msg); err != nil {
+				log.Println("failed to persist outgoing message:", err)
+			}
+
+			h.broadcast(msg)
+			relayToPeers(ctx, host, "", msg)
+
 			if store := currentAdminStore(); store != nil {
 				store.record(msg)
 			}
-
-			// exclude nothing — a locally-originated message goes to
-			// every directly-connected peer, then relays onward from there.
-			broadcastToPeers(ctx, host, "", msg)
 		}
 	})
 
-	fmt.Printf("Server running at http://localhost:%s\n", *httpPort)
-	log.Fatal(http.ListenAndServe(":"+*httpPort, nil))
+	addr := fmt.Sprintf(":%d", *port)
+	fmt.Printf("Server running at http://localhost%s\n", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
