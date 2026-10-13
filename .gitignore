@@ -1,0 +1,54 @@
+# Binaries and executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/lanmesh
+/lanmesh-admin*
+/lanmesh-android
+/lanmesh.apk
+/lanmesh-linux-*
+/lanmesh-darwin-*
+
+# Databases, keys, and runtime storage
+*.db
+*.db-journal
+*.db-wal
+lanmesh.db
+peer.key
+*-data/
+admin-data/
+node*/
+
+# Logs and forensic audit traces
+*.log
+*.jsonl
+lanmesh-admin-log.jsonl
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# Flutter & Android
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/build/
+mobile/android/.gradle/
+mobile/android/.kotlin/
+mobile/android/local.properties
+mobile/android/*.jks
+mobile/android/*.keystore
+mobile/android/key.properties
+mobile/android/app/build/
+mobile/android/app/debug/
+mobile/android/app/profile/
+mobile/android/app/release/
+mobile/android/app/src/main/assets/lanmesh-android
+mobile/android/app/src/main/jniLibs/
